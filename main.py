@@ -12,8 +12,9 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.models.schemas import (
     MotionAnalysisRequest, 
-    MotionAnalysisResponse, 
-    HealthCheck
+    ComprehensiveMotionAnalysisResponse, 
+    HealthCheck,
+    ArgumentCategory
 )
 from app.services.motion_analyzer import MotionAnalyzer
 from app.core.security import SecurityHeadersMiddleware
@@ -30,7 +31,7 @@ motion_analyzer = MotionAnalyzer()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    logger.info("Starting Legal Motion Analysis API")
+    logger.info("Starting Legal Motion Analysis API v2.0")
     await motion_analyzer.initialize()
     yield
     # Shutdown
@@ -40,8 +41,8 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Legal Motion Analysis API",
-    description="Production-ready API for analyzing opposing counsel motions in personal injury cases",
-    version="1.0.0",
+    description="Production-ready API for comprehensive analysis of legal motions - extracts ALL arguments",
+    version="2.0.0",
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     docs_url=f"{settings.API_V1_STR}/docs",
     redoc_url=f"{settings.API_V1_STR}/redoc",
@@ -79,7 +80,7 @@ async def health_check():
     return HealthCheck(
         status="healthy",
         timestamp=datetime.utcnow(),
-        version="1.0.0"
+        version="2.0.0"
     )
 
 @app.get("/health/detailed")
@@ -88,7 +89,8 @@ async def detailed_health_check():
     health_status = {
         "status": "healthy",
         "checks": {},
-        "timestamp": datetime.utcnow()
+        "timestamp": datetime.utcnow(),
+        "version": "2.0.0"
     }
     
     # Check motion analyzer
@@ -104,26 +106,28 @@ async def detailed_health_check():
     
     return health_status
 
-@app.post(f"{settings.API_V1_STR}/analyze-motion", response_model=MotionAnalysisResponse)
+@app.post(f"{settings.API_V1_STR}/analyze-motion", response_model=ComprehensiveMotionAnalysisResponse)
 async def analyze_motion(
     request: MotionAnalysisRequest,
     background_tasks: BackgroundTasks,
     token: str = Depends(security)
 ):
     """
-    Analyze legal motion for personal injury cases
+    Comprehensive motion analysis that extracts ALL arguments
     
-    Extracts structured argument data including:
-    - Negligence claims (duty, breach, causation, damages)
-    - Liability issues and procedural defenses
-    - Expert witness challenges and evidence admissibility
-    - Legal citations with validation
+    This endpoint:
+    - Extracts EVERY argument from the motion, no matter how minor
+    - Categorizes arguments flexibly (can create custom categories)
+    - Groups related arguments strategically
+    - Identifies themes, patterns, and missing arguments
+    - Provides detailed response strategy recommendations
+    - Validates all legal citations
     """
     try:
         request_id = str(uuid.uuid4())
         start_time = time.time()
         
-        logger.info(f"Starting motion analysis", extra={"request_id": request_id})
+        logger.info(f"Starting comprehensive motion analysis", extra={"request_id": request_id})
         
         # Analyze motion
         result = await motion_analyzer.analyze_motion(
@@ -134,17 +138,20 @@ async def analyze_motion(
         
         processing_time = time.time() - start_time
         
-        # Log completion
+        # Log completion with summary
         logger.info(
             f"Motion analysis completed",
             extra={
                 "request_id": request_id,
                 "processing_time": processing_time,
-                "motion_type": result.motion_type
+                "motion_type": result.motion_type,
+                "total_arguments": result.total_arguments_found,
+                "categories_used": len(result.categories_used),
+                "custom_categories": len(result.custom_categories_created)
             }
         )
         
-        return MotionAnalysisResponse(
+        return ComprehensiveMotionAnalysisResponse(
             **result.model_dump(),
             request_id=request_id,
             processing_time=processing_time
@@ -157,6 +164,51 @@ async def analyze_motion(
             detail=f"Analysis failed: {str(e)}"
         )
 
+@app.get(f"{settings.API_V1_STR}/argument-categories")
+async def get_argument_categories():
+    """Get all available argument categories"""
+    categories = {}
+    
+    # Group by type
+    category_groups = {
+        "negligence": [],
+        "liability": [],
+        "causation": [],
+        "damages": [],
+        "procedural": [],
+        "evidence": [],
+        "expert": [],
+        "other": []
+    }
+    
+    for cat in ArgumentCategory:
+        cat_value = cat.value
+        cat_name = cat_value.replace("_", " ").title()
+        
+        # Determine group
+        if cat_value.startswith("negligence_"):
+            category_groups["negligence"].append({"value": cat_value, "name": cat_name})
+        elif cat_value.startswith("liability_"):
+            category_groups["liability"].append({"value": cat_value, "name": cat_name})
+        elif cat_value.startswith("causation_"):
+            category_groups["causation"].append({"value": cat_value, "name": cat_name})
+        elif cat_value.startswith("damages_"):
+            category_groups["damages"].append({"value": cat_value, "name": cat_name})
+        elif cat_value.startswith("procedural_"):
+            category_groups["procedural"].append({"value": cat_value, "name": cat_name})
+        elif cat_value.startswith("evidence_"):
+            category_groups["evidence"].append({"value": cat_value, "name": cat_name})
+        elif cat_value.startswith("expert_"):
+            category_groups["expert"].append({"value": cat_value, "name": cat_name})
+        else:
+            category_groups["other"].append({"value": cat_value, "name": cat_name})
+    
+    return {
+        "categories": category_groups,
+        "total_categories": len(list(ArgumentCategory)),
+        "note": "AI can create custom categories beyond these predefined ones"
+    }
+
 @app.get(f"{settings.API_V1_STR}/motion-types")
 async def get_motion_types():
     """Get supported motion types"""
@@ -168,7 +220,34 @@ async def get_motion_types():
             "Motion to Compel",
             "Motion for Protective Order",
             "Motion to Exclude Expert",
-            "Motion for Sanctions"
+            "Motion for Sanctions",
+            "Discovery Motion",
+            "Jurisdictional Motion",
+            "Other"
+        ],
+        "note": "System can handle any motion type"
+    }
+
+@app.get(f"{settings.API_V1_STR}/analysis-stats")
+async def get_analysis_stats():
+    """Get statistics about the analysis capabilities"""
+    return {
+        "capabilities": {
+            "max_motion_length": 50000,
+            "min_motion_length": 100,
+            "max_arguments_tracked": "unlimited",
+            "citation_extraction": True,
+            "custom_categories": True,
+            "argument_grouping": True,
+            "strategic_analysis": True
+        },
+        "version": "2.0.0",
+        "improvements": [
+            "Extracts ALL arguments, not just predefined categories",
+            "Flexible categorization with custom category creation",
+            "Groups related arguments strategically",
+            "Identifies implied and missing arguments",
+            "Provides comprehensive response strategy"
         ]
     }
 

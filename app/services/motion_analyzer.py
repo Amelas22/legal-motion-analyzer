@@ -4,13 +4,15 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import re
 import json
+import uuid
 
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
 from app.models.schemas import (
-    MotionAnalysisResult, 
-    Argument, 
+    ComprehensiveMotionAnalysis,
+    ExtractedArgument,
+    ArgumentGroup,
     LegalCitation, 
     ResearchPriority,
     ArgumentCategory,
@@ -41,75 +43,92 @@ class MotionAnalyzer:
             raise
 
     def _get_system_prompt(self) -> str:
-        return """You are an expert legal analyst specializing in personal injury law and motion practice. 
-Your role is to analyze opposing counsel motions with precision and provide structured, 
-actionable insights for legal response strategy.
+        return """You are an expert legal analyst specializing in comprehensive motion analysis. Your primary goal is to extract EVERY SINGLE ARGUMENT from the opposing counsel's motion, no matter how minor, then categorize and analyze each one.
 
-Key Analysis Areas:
-1. NEGLIGENCE ELEMENTS: Analyze duty, breach, causation, and damages arguments
-2. LIABILITY ISSUES: Identify comparative fault, joint liability, and immunity claims  
-3. PROCEDURAL DEFENSES: Evaluate jurisdiction, venue, statute of limitations, and service issues
-4. EXPERT WITNESS CHALLENGES: Assess Daubert/Frye challenges and qualification attacks
-5. EVIDENCE ADMISSIBILITY: Review Rule 702, 403, and other evidentiary challenges
-6. LEGAL CITATIONS: Extract and categorize case law WITHOUT fabricating citations
+CRITICAL INSTRUCTION: Extract ALL arguments first, then assign categories. Do not limit yourself to predefined categories.
 
-Analysis Standards:
-- ACCURACY: Only extract citations that appear in the document
-- PRECISION: Provide specific legal principles and applications
-- STRATEGY: Focus on practical response recommendations
-- COMPREHENSIVENESS: Address all major legal arguments presented
-- RISK ASSESSMENT: Evaluate realistic success probability for opposing motion
+Analysis Process:
+1. READ THOROUGHLY: Read the entire motion carefully
+2. EXTRACT EVERYTHING: Identify every distinct argument, claim, or legal position
+3. QUOTE OR PARAPHRASE: For each argument, provide the actual text or close paraphrase
+4. CATEGORIZE FLEXIBLY: Assign the most appropriate category, create custom ones if needed
+5. ANALYZE COMPREHENSIVELY: Evaluate strength, identify weaknesses, note citations
+6. GROUP STRATEGICALLY: Identify related arguments that work together
+7. IDENTIFY PATTERNS: Note overall strategies and themes
+
+Argument Extraction Rules:
+- Extract MAJOR arguments (primary claims, key legal theories)
+- Extract MINOR arguments (supporting points, subsidiary claims)  
+- Extract PROCEDURAL arguments (jurisdiction, venue, timing, etc.)
+- Extract IMPLIED arguments (positions implied but not explicitly stated)
+- Extract FACTUAL assertions that support legal arguments
+- Note MISSING arguments (what they could have argued but didn't)
+
+Categories to Consider (but not limited to):
+- Negligence elements (duty, breach, causation, damages)
+- Liability theories (vicarious, direct, derivative, comparative, etc.)
+- Causation types (proximate, factual, intervening, superseding)
+- Damages (economic, non-economic, punitive, mitigation)
+- Procedural (jurisdiction, venue, service, statute of limitations, standing)
+- Evidence (admissibility, relevance, prejudice, hearsay, privilege)
+- Expert witness (qualification, methodology, reliability, Daubert)
+- Contract, insurance, constitutional issues
+- Create CUSTOM categories as needed for arguments that don't fit
+
+For Each Argument Include:
+- Unique ID (arg_001, arg_002, etc.)
+- Direct quote or close paraphrase from motion
+- Location in motion (section/paragraph)
+- Category (use existing or create custom)
+- Strength assessment with specific reasons
+- Citations used to support it
+- Potential weaknesses
+- Counter-arguments available
+- Priority for response (1-5)
 
 Legal Citation Requirements:
 - Extract ONLY citations that appear in the motion text
-- Include full citation format, case name, legal principle, and application
-- Assess binding vs. persuasive authority based on jurisdiction
-- Evaluate citation strength and relevance to current case
-- NEVER create or invent citations not present in the document
+- Never fabricate citations
+- Include full citation, case name, principle, and application
+- Note if citation is binding or persuasive authority
 
-You must respond with a valid JSON object that follows this exact structure:
-{
-    "motion_type": "string (e.g., Motion to Dismiss, Motion for Summary Judgment)",
-    "case_number": "string or null",
-    "parties": ["array of party names"],
-    "filing_date": null,
-    "primary_arguments": [
-        {
-            "category": "negligence_duty|negligence_breach|negligence_causation|negligence_damages|liability_issues|causation_disputes|damages_arguments|procedural_defenses|expert_witness_challenges|evidence_admissibility",
-            "argument_summary": "Brief summary of the argument",
-            "legal_basis": "Legal foundation for the argument",
-            "strength_indicators": ["List of factors indicating argument strength"],
-            "cited_cases": [
-                {
-                    "full_citation": "Complete legal citation",
-                    "case_name": "Case name",
-                    "legal_principle": "Legal principle or holding",
-                    "application": "How it applies to current case",
-                    "jurisdiction": "Court jurisdiction",
-                    "year": 2020,
-                    "is_binding": true,
-                    "citation_strength": "very_weak|weak|moderate|strong|very_strong"
-                }
-            ],
-            "counterarguments": ["Potential counterarguments"],
-            "strength_assessment": "very_weak|weak|moderate|strong|very_strong"
-        }
-    ],
-    "procedural_issues": ["List of procedural issues identified"],
-    "evidence_challenges": ["Evidence admissibility challenges"],
-    "expert_witness_issues": ["Expert witness challenges"],
-    "research_priorities": [
-        {
-            "research_area": "Area requiring research",
-            "priority_level": 1,
-            "suggested_sources": ["Recommended research sources"],
-            "key_questions": ["Key questions to investigate"]
-        }
-    ],
-    "overall_strength": "very_weak|weak|moderate|strong|very_strong",
-    "risk_assessment": 7,
-    "recommended_actions": ["List of recommended response actions"]
-}"""
+Strategic Analysis:
+- Group related arguments that build on each other
+- Identify overarching themes and strategies
+- Note which arguments are strongest/weakest
+- Identify what evidence or experts would be needed to counter
+- Suggest optimal response structure
+
+You must respond with a valid JSON object following the exact structure provided, capturing EVERY argument in the motion."""
+
+    def _get_extraction_prompt(self) -> str:
+        return """Focus on extracting arguments using these patterns:
+
+1. Look for argument indicators:
+   - "Plaintiff/Defendant argues..."
+   - "The undisputed facts show..."
+   - "As a matter of law..."
+   - "Courts have held..."
+   - "The evidence demonstrates..."
+   - "Plaintiff fails to..."
+   - "There is no genuine issue..."
+
+2. Extract from motion structure:
+   - Introduction/Background arguments
+   - Each numbered or lettered section
+   - Legal standard arguments
+   - Application of law to facts
+   - Policy arguments
+   - Conclusion requests
+
+3. Don't miss:
+   - Arguments in footnotes
+   - Arguments embedded in fact sections
+   - Implicit arguments from case citations
+   - Arguments about burden of proof
+   - Procedural arguments mixed with substantive ones
+
+Remember: When in doubt, extract it as a separate argument. Better to have too many than miss one."""
 
     async def _extract_legal_citations(self, motion_text: str) -> List[Dict[str, Any]]:
         """Extract legal citations from motion text without fabrication"""
@@ -121,40 +140,54 @@ You must respond with a valid JSON object that follows this exact structure:
             r'(\w+(?:\s+\w+)*)\s*v\.\s*(\w+(?:\s+\w+)*),?\s*(\d+)\s+(F\.\d?d|F\.\s?Supp\.?\s?\d?d?|U\.S\.)\s+(\d+)(?:\s*\(([^)]+)\s*(\d{4})\))?',
             # State cases with various reporters
             r'(\w+(?:\s+\w+)*)\s*v\.\s*(\w+(?:\s+\w+)*),?\s*(\d+)\s+([A-Z][^,\d]*?)\s+(\d+)(?:\s*\(([^)]+)\s*(\d{4})\))?',
+            # Statutory citations
+            r'(\d+)\s+(U\.S\.C\.|C\.F\.R\.|[A-Z][a-z]+\.\s*(?:Civ\.|Crim\.|Evid\.|R\.)\s*(?:Proc\.|Code)?)\s*§+\s*(\d+(?:\.\d+)*(?:\([a-zA-Z0-9]+\))*)',
         ]
         
         for pattern in citation_patterns:
             for match in re.finditer(pattern, motion_text, re.IGNORECASE):
                 try:
-                    case_name = f"{match.group(1).strip()} v. {match.group(2).strip()}"
-                    volume = match.group(3)
-                    reporter = match.group(4).strip()
-                    page = match.group(5)
-                    court = match.group(6) if match.group(6) else "Unknown"
-                    year = int(match.group(7)) if match.group(7) else 0
-                    
-                    citations.append({
-                        "full_citation": match.group(0).strip(),
-                        "case_name": case_name,
-                        "volume": volume,
-                        "reporter": reporter,
-                        "page": page,
-                        "court": court,
-                        "year": year
-                    })
+                    if "U.S.C." in match.group(0) or "C.F.R." in match.group(0) or "Code" in match.group(0):
+                        # Statutory citation
+                        citations.append({
+                            "full_citation": match.group(0).strip(),
+                            "type": "statute",
+                            "title": match.group(1),
+                            "code": match.group(2),
+                            "section": match.group(3)
+                        })
+                    else:
+                        # Case citation
+                        case_name = f"{match.group(1).strip()} v. {match.group(2).strip()}"
+                        volume = match.group(3)
+                        reporter = match.group(4).strip()
+                        page = match.group(5)
+                        court = match.group(6) if match.group(6) else "Unknown"
+                        year = int(match.group(7)) if match.group(7) else 0
+                        
+                        citations.append({
+                            "full_citation": match.group(0).strip(),
+                            "case_name": case_name,
+                            "volume": volume,
+                            "reporter": reporter,
+                            "page": page,
+                            "court": court,
+                            "year": year,
+                            "type": "case"
+                        })
                 except (ValueError, AttributeError):
                     continue
                     
-        return citations[:20]  # Limit to prevent overwhelming responses
+        return citations[:50]  # Limit to prevent overwhelming responses
 
     async def analyze_motion(
         self, 
         motion_text: str, 
         case_context: Optional[str] = None,
         analysis_options: Optional[AnalysisOptions] = None
-    ) -> MotionAnalysisResult:
+    ) -> ComprehensiveMotionAnalysis:
         """
-        Analyze legal motion and extract structured data
+        Analyze legal motion and extract ALL arguments with comprehensive structure
         """
         if not self._initialized:
             await self.initialize()
@@ -164,7 +197,7 @@ You must respond with a valid JSON object that follows this exact structure:
             extracted_citations = await self._extract_legal_citations(motion_text)
             
             # Prepare the user prompt
-            user_prompt = f"""Please analyze the following legal motion and provide a comprehensive structured response.
+            user_prompt = f"""Please analyze this legal motion and extract EVERY SINGLE ARGUMENT, no matter how minor.
 
 MOTION TEXT:
 {motion_text}
@@ -174,8 +207,18 @@ MOTION TEXT:
 EXTRACTED CITATIONS (use only these):
 {json.dumps(extracted_citations, indent=2)}
 
-Analyze all arguments, identify the motion type, assess strength and risk, and provide actionable recommendations.
-Remember to ONLY use citations that appear in the motion text."""
+{self._get_extraction_prompt()}
+
+Remember:
+1. Extract ALL arguments first (aim for comprehensive coverage)
+2. Assign appropriate categories (create custom ones if needed)
+3. Each argument gets a unique ID (arg_001, arg_002, etc.)
+4. Group related arguments
+5. Identify strategic themes
+6. Note what's missing or implied
+7. Prioritize arguments for response
+
+The goal is to ensure we don't miss ANY argument that needs to be addressed in our response."""
 
             # Make the API call with JSON mode
             response = await self.client.chat.completions.create(
@@ -186,23 +229,28 @@ Remember to ONLY use citations that appear in the motion text."""
                 ],
                 temperature=0.1,
                 response_format={"type": "json_object"},
-                max_tokens=3000
+                max_tokens=4000  # Increased for comprehensive extraction
             )
             
             # Parse the response
             result_data = json.loads(response.choices[0].message.content)
             
-            # Validate and create the result object
-            motion_result = MotionAnalysisResult(**result_data)
+            # Ensure proper structure for the new schema
+            result_data = self._ensure_comprehensive_structure(result_data)
             
-            # Post-process to validate citations
-            processed_result = await self._post_process_analysis(motion_result, motion_text, extracted_citations)
+            # Validate and create the result object
+            motion_result = ComprehensiveMotionAnalysis(**result_data)
+            
+            # Post-process to validate citations and organize
+            processed_result = await self._post_process_comprehensive_analysis(
+                motion_result, motion_text, extracted_citations
+            )
             
             # Log usage
             if response.usage:
                 logger.info(
-                    f"Motion analysis completed - Tokens used: {response.usage.total_tokens} "
-                    f"(prompt: {response.usage.prompt_tokens}, completion: {response.usage.completion_tokens})"
+                    f"Motion analysis completed - Arguments found: {processed_result.total_arguments_found} - "
+                    f"Tokens used: {response.usage.total_tokens}"
                 )
             
             return processed_result
@@ -219,64 +267,145 @@ Remember to ONLY use citations that appear in the motion text."""
             logger.error(f"Motion analysis failed: {e}")
             raise Exception(f"Analysis failed: {str(e)}")
 
-    async def _post_process_analysis(
+    def _ensure_comprehensive_structure(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure the response data has all required fields for ComprehensiveMotionAnalysis"""
+        
+        # Ensure all_arguments have proper IDs
+        if 'all_arguments' in data:
+            for i, arg in enumerate(data['all_arguments']):
+                if 'argument_id' not in arg:
+                    arg['argument_id'] = f"arg_{i+1:03d}"
+                if 'confidence_score' not in arg:
+                    arg['confidence_score'] = 0.8
+                if 'priority_level' not in arg:
+                    arg['priority_level'] = 3
+                if 'subcategories' not in arg:
+                    arg['subcategories'] = []
+                if 'weaknesses' not in arg:
+                    arg['weaknesses'] = []
+                if 'cited_statutes' not in arg:
+                    arg['cited_statutes'] = []
+        
+        # Build arguments_by_category if not present
+        if 'arguments_by_category' not in data and 'all_arguments' in data:
+            data['arguments_by_category'] = {}
+            for arg in data['all_arguments']:
+                category = arg.get('category', 'other')
+                if category not in data['arguments_by_category']:
+                    data['arguments_by_category'][category] = []
+                data['arguments_by_category'][category].append(arg)
+        
+        # Ensure required fields
+        data['total_arguments_found'] = len(data.get('all_arguments', []))
+        
+        if 'categories_used' not in data:
+            data['categories_used'] = list(data.get('arguments_by_category', {}).keys())
+        
+        if 'confidence_in_analysis' not in data:
+            data['confidence_in_analysis'] = 0.85
+            
+        return data
+
+    async def _post_process_comprehensive_analysis(
         self, 
-        result: MotionAnalysisResult, 
+        result: ComprehensiveMotionAnalysis, 
         motion_text: str,
         extracted_citations: List[Dict[str, Any]]
-    ) -> MotionAnalysisResult:
-        """Post-process analysis results for quality and completeness"""
+    ) -> ComprehensiveMotionAnalysis:
+        """Post-process comprehensive analysis for quality and completeness"""
         
         # Create a set of valid citation names for quick lookup
-        valid_citations = {cite['case_name'].lower() for cite in extracted_citations}
+        valid_case_citations = {
+            cite['case_name'].lower() 
+            for cite in extracted_citations 
+            if cite.get('type') == 'case'
+        }
+        valid_statute_citations = {
+            cite['full_citation'].lower() 
+            for cite in extracted_citations 
+            if cite.get('type') == 'statute'
+        }
         
-        # Validate and clean citations
-        for arg in result.primary_arguments:
+        # Validate and clean citations in each argument
+        for arg in result.all_arguments:
+            # Clean case citations
             clean_citations = []
             for citation in arg.cited_cases:
-                # Validate citation appears in motion text or extracted citations
                 if (citation.case_name.lower() in motion_text.lower() or 
-                    citation.case_name.lower() in valid_citations):
+                    citation.case_name.lower() in valid_case_citations):
                     clean_citations.append(citation)
                 else:
                     logger.warning(f"Removed potentially fabricated citation: {citation.case_name}")
             arg.cited_cases = clean_citations
             
-        # Ensure minimum argument coverage
-        covered_categories = {arg.category for arg in result.primary_arguments}
-        required_categories = [
-            ArgumentCategory.NEGLIGENCE_CAUSATION,
-            ArgumentCategory.LIABILITY_ISSUES,
-            ArgumentCategory.PROCEDURAL_DEFENSES
+            # Validate statute citations
+            clean_statutes = []
+            for statute in arg.cited_statutes:
+                if (statute.lower() in motion_text.lower() or 
+                    any(statute.lower() in cite for cite in valid_statute_citations)):
+                    clean_statutes.append(statute)
+            arg.cited_statutes = clean_statutes
+        
+        # Identify any arguments that might have been missed
+        potential_missed = self._check_for_missed_arguments(motion_text, result)
+        if potential_missed:
+            result.notable_omissions.extend(potential_missed)
+        
+        # Ensure research priorities reference actual arguments
+        for priority in result.research_priorities:
+            if not priority.related_arguments:
+                # Link to relevant arguments based on research area
+                related = [
+                    arg.argument_id for arg in result.all_arguments
+                    if priority.research_area.lower() in arg.argument_summary.lower()
+                ]
+                priority.related_arguments = related[:3]  # Top 3 related
+        
+        # Update metadata
+        result.total_arguments_found = len(result.all_arguments)
+        result.categories_used = list(result.arguments_by_category.keys())
+        
+        # Identify custom categories (those not in ArgumentCategory enum)
+        standard_categories = {cat.value for cat in ArgumentCategory}
+        result.custom_categories_created = [
+            cat for cat in result.categories_used 
+            if cat not in standard_categories
         ]
         
-        for category in required_categories:
-            if category not in covered_categories:
-                # Add placeholder argument if major category missing
-                result.primary_arguments.append(
-                    Argument(
-                        category=category,
-                        argument_summary=f"No specific {category.value} arguments identified in motion",
-                        legal_basis="Standard personal injury law analysis",
-                        strength_indicators=["Analysis pending"],
-                        cited_cases=[],
-                        counterarguments=[],
-                        strength_assessment=StrengthLevel.MODERATE
-                    )
-                )
-        
-        # Ensure research priorities exist
-        if not result.research_priorities:
-            result.research_priorities = [
-                ResearchPriority(
-                    research_area="General motion response",
-                    priority_level=1,
-                    suggested_sources=["Case law databases", "Legal precedents"],
-                    key_questions=["What are the strongest counterarguments?"]
-                )
-            ]
-        
         return result
+
+    def _check_for_missed_arguments(
+        self, 
+        motion_text: str, 
+        result: ComprehensiveMotionAnalysis
+    ) -> List[str]:
+        """Check for potentially missed arguments based on common patterns"""
+        missed = []
+        
+        # Check for common argument patterns not covered
+        patterns_to_check = [
+            (r"statute of limitations", "Statute of limitations argument"),
+            (r"failure to state a claim", "Failure to state a claim argument"),
+            (r"lack of standing", "Standing challenge"),
+            (r"improper venue", "Venue challenge"),
+            (r"personal jurisdiction", "Personal jurisdiction challenge"),
+            (r"failure to join.*party", "Failure to join necessary party"),
+            (r"res judicata|collateral estoppel", "Preclusion argument"),
+            (r"arbitration clause|agreement", "Arbitration argument"),
+            (r"qualified immunity", "Qualified immunity defense"),
+            (r"governmental immunity", "Governmental immunity defense"),
+        ]
+        
+        existing_summaries = " ".join([
+            arg.argument_summary.lower() for arg in result.all_arguments
+        ])
+        
+        for pattern, description in patterns_to_check:
+            if re.search(pattern, motion_text, re.IGNORECASE):
+                if not re.search(pattern, existing_summaries, re.IGNORECASE):
+                    missed.append(f"Potential {description} not fully extracted")
+        
+        return missed[:5]  # Limit to top 5 to avoid noise
 
     async def health_check(self) -> bool:
         """Perform health check on the motion analyzer"""
